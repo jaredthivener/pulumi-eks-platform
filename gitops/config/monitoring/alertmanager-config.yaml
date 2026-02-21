@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-kube-prometheus-stack-alertmanager
+  namespace: monitoring
+  annotations:
+    # Actual credentials (PagerDuty key, Slack webhook) are NOT here —
+    # they are mounted as files from a separate secret managed by
+    # External Secrets Operator (synced from AWS Secrets Manager).
+    # This secret only declares routing config that references those file paths.
+stringData:
+  alertmanager.yaml: |
+    global:
+      resolve_timeout: 5m
+      pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+      slack_api_url_file: '/etc/alertmanager/secrets/alertmanager-credentials/slack-webhook-url'
+
+    route:
+      group_by: ['alertname', 'slo', 'namespace']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: 'slack-warnings'
+      routes:
+        - matchers:
+            - severity="critical"
+          receiver: 'pagerduty-critical'
+          continue: true
+        - matchers:
+            - severity="critical"
+          receiver: 'slack-critical'
+        - matchers:
+            - severity="warning"
+          receiver: 'slack-warnings'
+
+    receivers:
+      - name: 'pagerduty-critical'
+        pagerduty_configs:
+          - routing_key_file: /etc/alertmanager/secrets/alertmanager-credentials/pagerduty-key
+            description: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+            details:
+              slo: '{{ .GroupLabels.slo }}'
+              runbook: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+
+      - name: 'slack-critical'
+        slack_configs:
+          - channel: '#platform-incidents'
+            color: 'danger'
+            title: ':fire: CRITICAL: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+            send_resolved: true
+
+      - name: 'slack-warnings'
+        slack_configs:
+          - channel: '#platform-alerts'
+            color: 'warning'
+            title: ':warning: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+            send_resolved: true
+
+    inhibit_rules:
+      # Suppress warnings when critical is firing for the same SLO
+      - source_matchers:
+          - severity="critical"
+        target_matchers:
+          - severity="warning"
+        equal: ['slo']

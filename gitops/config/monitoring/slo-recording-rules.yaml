@@ -1,0 +1,106 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: slo-recording-rules
+  namespace: monitoring
+  labels:
+    # kube-prometheus-stack discovers rules via this label
+    release: kube-prometheus-stack
+    app: kube-prometheus-stack
+spec:
+  groups:
+    # ---------------------------------------------------------------------------
+    # API Gateway SLI: availability (non-5xx ratio)
+    # SLO: 99.9% over 30-day window → error budget = 43.2 min/month
+    # ---------------------------------------------------------------------------
+    - name: "slo:api_gateway:availability"
+      interval: 30s
+      rules:
+        - record: "slo:api_gateway:availability:5m"
+          expr: |
+            sum(rate(http_requests_total{job="api-gateway",status!~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="api-gateway"}[5m]))
+
+        - record: "slo:api_gateway:availability:1h"
+          expr: |
+            sum(rate(http_requests_total{job="api-gateway",status!~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total{job="api-gateway"}[1h]))
+
+        - record: "slo:api_gateway:availability:6h"
+          expr: |
+            sum(rate(http_requests_total{job="api-gateway",status!~"5.."}[6h]))
+            /
+            sum(rate(http_requests_total{job="api-gateway"}[6h]))
+
+        - record: "slo:api_gateway:availability:1d"
+          expr: |
+            sum(rate(http_requests_total{job="api-gateway",status!~"5.."}[1d]))
+            /
+            sum(rate(http_requests_total{job="api-gateway"}[1d]))
+
+        # Error budget consumed (30d rolling)
+        - record: "slo:api_gateway:error_budget:remaining:30d"
+          expr: |
+            1 - (
+              (1 - slo:api_gateway:availability:1d) /
+              (1 - 0.999)
+            )
+
+    # ---------------------------------------------------------------------------
+    # API Gateway SLI: latency p99 < 500ms
+    # ---------------------------------------------------------------------------
+    - name: "slo:api_gateway:latency"
+      interval: 30s
+      rules:
+        - record: "slo:api_gateway:latency:p99:5m"
+          expr: 'histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job="api-gateway"}[5m])))'
+
+        - record: "slo:api_gateway:latency:p99:1h"
+          expr: 'histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job="api-gateway"}[1h])))'
+
+        # Latency SLI (fraction of requests under 500ms threshold)
+        - record: "slo:api_gateway:latency:success_ratio:5m"
+          expr: |
+            sum(rate(http_request_duration_seconds_bucket{job="api-gateway",le="0.5"}[5m]))
+            /
+            sum(rate(http_request_duration_seconds_count{job="api-gateway"}[5m]))
+
+    # ---------------------------------------------------------------------------
+    # Auth Service SLI: availability 99.95%
+    # Error budget = 21.6 min/month
+    # ---------------------------------------------------------------------------
+    - name: "slo:auth_service:availability"
+      interval: 30s
+      rules:
+        - record: "slo:auth_service:availability:5m"
+          expr: |
+            sum(rate(http_requests_total{job="auth-service",status!~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="auth-service"}[5m]))
+
+        - record: "slo:auth_service:error_budget:remaining:30d"
+          expr: |
+            1 - (
+              (1 - slo:auth_service:availability:5m) /
+              (1 - 0.9995)
+            )
+
+    # ---------------------------------------------------------------------------
+    # Node saturation SLI: node-level golden signals
+    # ---------------------------------------------------------------------------
+    - name: "slo:eks_nodes:saturation"
+      interval: 1m
+      rules:
+        - record: slo:node:cpu_utilization
+          expr: '100 - (avg by (node) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)'
+
+        - record: slo:node:memory_utilization
+          expr: '(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100'
+
+        - record: slo:node:healthy_ratio
+          expr: |
+            sum(kube_node_status_condition{condition="Ready",status="true"})
+            /
+            count(kube_node_info)

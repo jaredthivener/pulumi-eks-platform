@@ -1,0 +1,87 @@
+# ServiceAccount token automounting policies
+#
+# Two policies work together:
+#   1. mutate-automount-sa-token  – sets automountServiceAccountToken: false on new
+#      ServiceAccounts (mutation, admission-time only)
+#   2. block-automount-sa-token   – blocks any Pod that explicitly opts back in
+#      (validation, enforce)
+#
+# How to grant a pod legitimate API access:
+#   Option A) Create a PolicyException in the kyverno namespace
+#   Option B) Mount a custom projected token volume (preferred for IRSA/Pod Identity)
+#
+# Excluded namespaces: kyverno, kube-system, kube-public, karpenter, tetragon
+# (these need token access for bootstrap/system operations)
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: mutate-automount-sa-token
+  annotations:
+    policies.kyverno.io/title: Mutate Automount ServiceAccount Token
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >
+      Sets automountServiceAccountToken: false on all ServiceAccounts so pods do not
+      receive a mounted API token unless explicitly required. Works with the
+      block-automount-sa-token policy to prevent pod-level overrides.
+spec:
+  background: false   # mutation only applies at admission time
+  rules:
+    - name: set-automount-false
+      match:
+        any:
+          - resources:
+              kinds: [ServiceAccount]
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kyverno
+                - kube-system
+                - kube-public
+                - karpenter
+                - tetragon
+      mutate:
+        patchStrategicMerge:
+          +(automountServiceAccountToken): false   # only patch if field is unset
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-automount-sa-token
+  annotations:
+    policies.kyverno.io/title: Block Automount ServiceAccount Token
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >
+      Blocks pods that explicitly set automountServiceAccountToken: true.
+      Prevents workloads from re-enabling SA token mounting after the
+      SA-level default disables it. Use a PolicyException for pods that
+      genuinely need Kubernetes API access.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-automount-true
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kyverno
+                - kube-system
+                - kube-public
+                - karpenter
+                - tetragon
+      validate:
+        message: >
+          automountServiceAccountToken: true is not allowed. Remove the field or set it
+          to false. Create a PolicyException in the kyverno namespace if this pod
+          genuinely requires Kubernetes API access.
+        pattern:
+          spec:
+            =(automountServiceAccountToken): false

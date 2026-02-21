@@ -1,0 +1,82 @@
+# ── karpenter ────────────────────────────────────────────────────────────────
+# Karpenter watches for unschedulable pods and provisions the right EC2 instance
+# type on demand — replacing the need for managed node group auto-scaling.
+# Spot-to-spot consolidation is enabled; the SQS interruption queue handles
+# graceful draining before spot reclamation. Runs 2 replicas on system nodes.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: karpenter
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: eks-platform
+  source:
+    repoURL: oci://public.ecr.aws/karpenter
+    chart: karpenter
+    targetRevision: "1.3.3"
+    helm:
+      values: |
+        serviceAccount:
+          create: true
+          name: karpenter
+          annotations: {}
+        settings:
+          clusterName: eks-platform
+          interruptionQueue: eks-platform-karpenter
+          featureGates:
+            spotToSpotConsolidation: true
+        controller:
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+        nodeSelector:
+          eks.amazonaws.com/nodegroup: system
+        replicas: 2
+        podDisruptionBudget:
+          maxUnavailable: 1
+        serviceMonitor:
+          enabled: true
+        logLevel: info
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: karpenter
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+# ── karpenter-config ─────────────────────────────────────────────────────────
+# Applies the cluster-specific NodePool and EC2NodeClass CRs from
+# gitops/config/karpenter/. Defines Graviton3 (arm64) instance families,
+# AL2023 Bottlerocket AMI selection, subnet/SG discovery tags, and
+# consolidation / expiry policies for cost efficiency.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: karpenter-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://github.com/jaredthivener/eks-platform
+    path: gitops/config/karpenter
+    targetRevision: HEAD
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: karpenter
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

@@ -1,0 +1,165 @@
+# ── cert-manager ─────────────────────────────────────────────────────────────
+# Manages X.509 certificate lifecycle (issuance, renewal) for ingress TLS and
+# internal webhook certificates. Deployed HA (2 replicas each for controller,
+# webhook, and cainjector) on system nodes.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: "v1.19.3"
+    helm:
+      values: |
+        installCRDs: true
+        replicaCount: 2
+        serviceMonitor:
+          enabled: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+        webhook:
+          replicaCount: 2
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+        cainjector:
+          replicaCount: 2
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+        nodeSelector:
+          eks.amazonaws.com/nodegroup: system
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+# ── external-secrets ─────────────────────────────────────────────────────────
+# External Secrets Operator syncs secrets from AWS Secrets Manager into
+# Kubernetes Secrets. The ClusterSecretStore in gitops/config/monitoring
+# uses EKS Pod Identity (no static credentials). Required by Grafana and
+# Alertmanager before they start.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-secrets
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://charts.external-secrets.io
+    chart: external-secrets
+    targetRevision: "2.0.1"  # major version — review release notes before deploying
+    helm:
+      values: |
+        replicaCount: 2
+        serviceMonitor:
+          enabled: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 128Mi
+        webhook:
+          replicaCount: 2
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+        certController:
+          replicaCount: 2
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+        nodeSelector:
+          eks.amazonaws.com/nodegroup: system
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: external-secrets
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+# ── aws-load-balancer-controller ─────────────────────────────────────────────
+# Provisions ALB / NLB resources in response to Ingress and Service objects.
+# Uses EKS Pod Identity for IAM (no annotated SA keys). PDB ensures at least
+# one replica survives node disruptions so existing load balancers stay managed.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aws-load-balancer-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://aws.github.io/eks-charts
+    chart: aws-load-balancer-controller
+    targetRevision: "3.0.0"  # major version — review release notes before deploying
+    helm:
+      values: |
+        clusterName: eks-platform
+        replicaCount: 2
+        serviceAccount:
+          create: true
+          name: aws-load-balancer-controller
+          annotations: {}
+        serviceMonitor:
+          enabled: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 256Mi
+        nodeSelector:
+          eks.amazonaws.com/nodegroup: system
+        podDisruptionBudget:
+          maxUnavailable: 1
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

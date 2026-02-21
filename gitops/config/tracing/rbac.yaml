@@ -1,0 +1,46 @@
+# RBAC for the OTel Collector's k8sattributes processor
+#
+# The k8sattributes processor enriches every telemetry signal (logs, metrics,
+# traces) with Kubernetes metadata by querying the kube-apiserver. It needs
+# read access to pods, namespaces, nodes, and replicasets to resolve:
+#
+#   k8s.pod.name           k8s.namespace.name    k8s.node.name
+#   k8s.pod.uid            k8s.deployment.name   k8s.pod.start_time
+#
+# The OTel Operator creates a ServiceAccount named "otel-collector" in the
+# tracing namespace when it provisions an OpenTelemetryCollector CR. This
+# ClusterRole + ClusterRoleBinding grants that SA the needed permissions.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector-k8s-clusterrole
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: opentelemetry-collector
+    app.kubernetes.io/managed-by: argocd
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector-k8s-clusterrolebinding
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: opentelemetry-collector
+    app.kubernetes.io/managed-by: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-collector-k8s-clusterrole
+subjects:
+  - kind: ServiceAccount
+    # The OTel Operator names the SA after the CR: <cr-name>-collector
+    name: otel-collector-collector
+    namespace: tracing

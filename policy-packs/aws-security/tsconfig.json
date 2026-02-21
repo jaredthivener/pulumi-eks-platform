@@ -1,0 +1,23 @@
+{
+    "compilerOptions": {
+        "outDir": "bin",
+        "target": "es6",
+        "module": "nodenext",
+        "moduleResolution": "nodenext",
+        "declaration": true,
+        "sourceMap": false,
+        "stripInternal": true,
+        "experimentalDecorators": true,
+        "pretty": true,
+        "noFallthroughCasesInSwitch": true,
+        "noImplicitAny": true,
+        "noImplicitReturns": true,
+        "forceConsistentCasingInFileNames": true,
+        "strictNullChecks": true,
+        "typeRoots": ["./node_modules/@types"],
+        "skipLibCheck": true
+    },
+    "files": [
+        "index.ts"
+    ]
+}

@@ -1,0 +1,69 @@
+# Bottlerocket settings – container and EKS runtime tuning
+# Applied to all node groups (managed + Karpenter-provisioned).
+# Merged with EKS/Karpenter-injected bootstrap config at node launch time.
+#
+# Reference: https://bottlerocket.dev/en/os/latest/api/settings/
+
+[settings.kubernetes]
+# Rotate container logs before they fill the data volume
+container-log-max-size = "10Mi"
+container-log-max-files = 5
+
+# Enforce CPU CFS quota so container CPU limits are accurate
+cpu-cfs-quota-enforced = true
+
+# Graceful node shutdown: give in-flight requests time to drain before
+# SIGKILL.  Must be ≤ the node termination handler timeout.
+shutdown-grace-period = "30s"
+shutdown-grace-period-for-critical-pods = "10s"
+
+# Apply RuntimeDefault seccomp to all pods without an explicit profile.
+# Defence-in-depth alongside Kyverno baseline policy enforcement.
+seccomp-default = true
+
+# Reserve CPU + memory for kubelet, container runtime, and OS daemons.
+# Prevents node-level resource starvation when pods run at full capacity.
+[settings.kubernetes.system-reserved]
+cpu = "100m"
+memory = "100Mi"
+ephemeral-storage = "1Gi"
+
+[settings.kubernetes.kube-reserved]
+cpu = "100m"
+memory = "200Mi"
+ephemeral-storage = "1Gi"
+
+# Soft eviction: kubelet starts reclaiming resources gradually first.
+[settings.kubernetes.eviction-soft]
+"memory.available" = "200Mi"
+"nodefs.available" = "15%"
+
+[settings.kubernetes.eviction-soft-grace-period]
+"memory.available" = "2m"
+"nodefs.available" = "5m"
+
+# Hard eviction: pods are forcibly evicted when these thresholds are crossed.
+[settings.kubernetes.eviction-hard]
+"memory.available" = "100Mi"
+"nodefs.available" = "10%"
+"nodefs.inodesFree" = "5%"
+
+[settings.kernel.sysctl]
+# Connection backlog – raised for services receiving high connection rates
+"net.core.somaxconn" = "65535"
+"net.ipv4.tcp_max_syn_backlog" = "65535"
+
+# Ephemeral port range – needed for high-connection-rate services and
+# egress-heavy workloads (Cilium tracks flows per 5-tuple).
+"net.ipv4.ip_local_port_range" = "1024 65535"
+
+# Allow memory overcommit – required by many JVM/Go workloads; Linux
+# OOM killer handles the actual enforcement.
+"vm.overcommit_memory" = "1"
+
+# inotify – many containers watch config files for dynamic reloads
+"fs.inotify.max_user_watches" = "1048576"
+"fs.inotify.max_user_instances" = "8192"
+
+# Global file descriptor limit for the node
+"fs.file-max" = "1048576"

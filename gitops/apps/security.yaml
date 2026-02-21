@@ -1,0 +1,201 @@
+# ── kyverno ──────────────────────────────────────────────────────────────────
+# Runs the admission webhook that evaluates every resource create/update against
+# Kyverno policies. Deployed HA (3 admission replicas, PDB minAvailable=2) on
+# system nodes to avoid being evicted during Karpenter scale-down events.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://charts.kyverno.io
+    chart: kyverno
+    targetRevision: "3.7.1"  # latest as of 2026-02-20
+    helm:
+      values: |
+        admissionController:
+          replicas: 3
+          podDisruptionBudget:
+            minAvailable: 2
+          serviceMonitor:
+            enabled: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: eks.amazonaws.com/nodegroup
+                      operator: In
+                      values: ["system"]
+        backgroundController:
+          replicas: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        cleanupController:
+          replicas: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+        reportsController:
+          replicas: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+        features:
+          policyExceptions:
+            enabled: true
+            namespace: kyverno
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+# ── kyverno-policies ─────────────────────────────────────────────────────────
+# Deploys the official upstream Kyverno policy library with the 'baseline' Pod
+# Security Standard enforced cluster-wide. Infrastructure namespaces (kube-system,
+# argocd, cilium, etc.) are excluded so system components aren't blocked.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://charts.kyverno.io
+    chart: kyverno-policies
+    targetRevision: "3.7.1"  # latest as of 2026-02-20
+    helm:
+      values: |
+        podSecurityStandard: baseline
+        validationFailureAction: Enforce
+        excludeNamespacesFromAdmission:
+          - kube-system
+          - kube-public
+          - kube-node-lease
+          - argocd
+          - kyverno
+          - cilium
+          - cert-manager
+          - external-secrets
+          - karpenter
+          - monitoring
+          - tetragon
+          - loki
+          - logging
+          - opentelemetry-operator-system
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+
+# ── kyverno-cluster-policies ─────────────────────────────────────────────────
+# Applies custom ClusterPolicy resources from gitops/config/kyverno/cluster-policies/.
+# Includes: image verification (ECR signatures), disallow automount of SA tokens,
+# best-practice labels enforcement, and restricted PSS overrides where needed.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno-cluster-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://github.com/jaredthivener/eks-platform
+    path: gitops/config/kyverno/cluster-policies
+    targetRevision: HEAD
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+
+# ── tetragon ─────────────────────────────────────────────────────────────────
+# Cilium Tetragon provides eBPF-based runtime security: process execution tracing,
+# network observability, and file-access auditing at the kernel level. Runs as a
+# DaemonSet on all nodes. Logs are written as JSON for downstream SIEM ingestion.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tetragon
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://helm.cilium.io
+    chart: tetragon
+    targetRevision: "1.6.0"
+    helm:
+      values: |
+        tetragon:
+          enabled: true
+          exportFilename: /var/run/cilium/tetragon/tetragon.log
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+        tetragonOperator:
+          enabled: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+        export:
+          stdout:
+            enabledExporters:
+              - json
+        serviceMonitor:
+          enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

@@ -1,0 +1,4 @@
+config:
+  aws:region: us-east-1
+  eks-platform:gitopsRepoUrl: https://github.com/jaredthivener/eks-platform
+  eks-platform:awsRegion: us-east-1

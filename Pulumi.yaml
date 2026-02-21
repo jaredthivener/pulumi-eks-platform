@@ -1,0 +1,8 @@
+name: eks-platform
+runtime: nodejs
+description: Production EKS platform with security hardening, GitOps, cost optimization, and SRE practices
+config:
+  pulumi:tags:
+    value:
+      cost-center: platform
+      managed-by: pulumi

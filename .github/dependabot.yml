@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Root npm (Pulumi program)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+    groups:
+      pulumi:
+        patterns: ["@pulumi/*"]
+      devDeps:
+        patterns: ["typescript", "@types/*"]
+
+  # Policy pack npm
+  - package-ecosystem: npm
+    directory: /policy-packs/aws-security
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+    groups:
+      pulumi:
+        patterns: ["@pulumi/*"]

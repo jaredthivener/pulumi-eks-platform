@@ -1,0 +1,122 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: slo-alert-rules
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+    app: kube-prometheus-stack
+spec:
+  groups:
+    # ---------------------------------------------------------------------------
+    # API Gateway availability alerts
+    # Multi-window, multi-burn-rate (Google SRE chapter 5 model)
+    # ---------------------------------------------------------------------------
+    - name: "slo:api_gateway:alerts"
+      rules:
+        - alert: ApiGatewayHighErrorBudgetBurn
+          # SEV1: consuming error budget 14.4× faster than allowed
+          # Fires if SLO breach will exhaust budget in < 1 hour
+          expr: |
+            (1 - slo:api_gateway:availability:1h) / (1 - 0.999) > 14.4
+            and
+            (1 - slo:api_gateway:availability:5m) / (1 - 0.999) > 14.4
+          for: 2m
+          labels:
+            severity: critical
+            slo: api-gateway-availability
+            window: 1h
+          annotations:
+            summary: "API Gateway: high error budget burn rate"
+            description: "Error budget burning 14.4× faster than allowed. At this rate the 30-day budget will be exhausted in < 1 hour. Availability: {{ $value | humanizePercentage }}. Runbook: https://runbooks.internal/api-gateway-outage"
+
+        - alert: ApiGatewayMediumErrorBudgetBurn
+          # SEV2: consuming budget 6× faster – burns budget in ~6 hours
+          expr: |
+            (1 - slo:api_gateway:availability:6h) / (1 - 0.999) > 6
+            and
+            (1 - slo:api_gateway:availability:1h) / (1 - 0.999) > 6
+          for: 15m
+          labels:
+            severity: warning
+            slo: api-gateway-availability
+            window: 6h
+          annotations:
+            summary: "API Gateway: elevated error budget burn rate"
+            description: "Error budget burning 6× faster than allowed. Budget exhaustion in ~6 hours if trend continues. Runbook: https://runbooks.internal/api-gateway-outage"
+
+        - alert: ApiGatewayLatencySLOBreach
+          expr: slo:api_gateway:latency:p99:5m > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            slo: api-gateway-latency
+          annotations:
+            summary: "API Gateway p99 latency exceeds 500ms SLO"
+            description: "p99 latency is {{ $value | humanizeDuration }}, exceeding 500ms SLO. Runbook: https://runbooks.internal/api-gateway-latency"
+
+    # ---------------------------------------------------------------------------
+    # Auth Service alerts (tighter SLO = lower burn-rate threshold)
+    # ---------------------------------------------------------------------------
+    - name: "slo:auth_service:alerts"
+      rules:
+        - alert: AuthServiceErrorBudgetBurn
+          expr: |
+            (1 - slo:auth_service:availability:5m) / (1 - 0.9995) > 14.4
+          for: 2m
+          labels:
+            severity: critical
+            slo: auth-service-availability
+          annotations:
+            summary: "Auth Service: critical error budget burn"
+            description: "Auth service availability SLO (99.95%) breach. Error budget exhaustion imminent. Runbook: https://runbooks.internal/auth-service-outage"
+
+    # ---------------------------------------------------------------------------
+    # Node-level saturation alerts (golden signal: saturation)
+    # ---------------------------------------------------------------------------
+    - name: "slo:eks_nodes:alerts"
+      rules:
+        - alert: NodeCPUSaturation
+          expr: slo:node:cpu_utilization > 85
+          for: 10m
+          labels:
+            severity: warning
+            signal: saturation
+          annotations:
+            summary: "Node {{ $labels.node }} CPU > 85%"
+            description: "Node CPU utilization is {{ $value }}%. Karpenter should auto-scale. If not, check NodePool limits. Runbook: https://runbooks.internal/node-pressure"
+
+        - alert: NodeMemorySaturation
+          expr: slo:node:memory_utilization > 90
+          for: 5m
+          labels:
+            severity: warning
+            signal: saturation
+          annotations:
+            summary: "Node memory > 90%"
+            description: "Node memory pressure may cause OOM evictions. Runbook: https://runbooks.internal/node-pressure"
+
+        - alert: NodeAvailabilitySLOBreach
+          expr: slo:node:healthy_ratio < 0.995
+          for: 5m
+          labels:
+            severity: critical
+            slo: node-availability
+          annotations:
+            summary: "Cluster node availability below 99.5% SLO"
+            description: "Only {{ $value | humanizePercentage }} of nodes are Ready. Runbook: https://runbooks.internal/eks-cluster-outage"
+
+    # ---------------------------------------------------------------------------
+    # Error budget burn tracking – page when budget < 10% remaining
+    # ---------------------------------------------------------------------------
+    - name: "slo:error_budget:alerts"
+      rules:
+        - alert: ApiGatewayErrorBudgetLow
+          expr: slo:api_gateway:error_budget:remaining:30d < 0.1
+          for: 5m
+          labels:
+            severity: warning
+            slo: api-gateway-availability
+          annotations:
+            summary: "API Gateway 30-day error budget < 10% remaining"
+            description: "Only {{ $value | humanizePercentage }} of error budget remains. No risky deploys until next SLO period. Review https://runbooks.internal/error-budget-policy"

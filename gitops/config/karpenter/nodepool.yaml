@@ -1,0 +1,81 @@
+# NodePool – mixed Spot/On-Demand, Graviton3 arm64
+#
+# Cost optimisation principles:
+#   - Spot first, On-Demand fallback (up to 90% savings)
+#   - arm64 only (Graviton3 ~20% better price/performance)
+#   - Multiple instance families: diversifies Spot pool, reduces interruption rate
+#   - Consolidation: replace over-provisioned nodes automatically (~15–30% savings)
+#   - Node TTL: 720h forces refresh → picks up newer/cheaper Spot capacity
+#
+# To add instance types: extend the node.kubernetes.io/instance-type values list.
+# To adjust resource caps: edit spec.limits.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: app-nodepool
+spec:
+  template:
+    metadata:
+      labels:
+        role: application
+    spec:
+      requirements:
+        # arm64 only – Graviton3 across the whole cluster
+        - key: kubernetes.io/arch
+          operator: In
+          values: [arm64]
+
+        # Spot first, On-Demand as fallback
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [spot, on-demand]
+
+        # Graviton3 families diversified across general, compute, and memory workloads.
+        # Multiple sizes (large → 4xlarge) maximise the Spot interruption pool.
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+            # General purpose
+            - m7g.large
+            - m7g.xlarge
+            - m7g.2xlarge
+            - m7g.4xlarge
+            # Compute optimised
+            - c7g.large
+            - c7g.xlarge
+            - c7g.2xlarge
+            - c7g.4xlarge
+            # Memory optimised
+            - r7g.large
+            - r7g.xlarge
+            - r7g.2xlarge
+
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1
+        kind: EC2NodeClass
+        name: default
+
+      # Taint so app workloads don't accidentally schedule onto system nodes
+      taints:
+        - key: node.eks.aws/nodegroup
+          value: app
+          effect: NoSchedule
+
+      # Force node replacement after 720h – refreshes Spot capacity and pricing
+      expireAfter: 720h
+
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    consolidateAfter: 30s
+    budgets:
+      # Never evict more than 10% of nodes simultaneously
+      - nodes: "10%"
+      # Block disruption during business hours (UTC) to avoid incidents
+      - nodes: "0"
+        schedule: "0 9 * * MON-FRI"
+        duration: 8h
+
+  # Hard caps on total resources Karpenter may provision for this NodePool
+  limits:
+    cpu: "200"
+    memory: 400Gi

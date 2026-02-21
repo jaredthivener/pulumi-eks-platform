@@ -1,0 +1,158 @@
+# Best-practice ClusterPolicies (cluster-wide, mostly Audit)
+#
+# All policies run in Audit mode unless noted, generating PolicyReport entries
+# visible in the Kyverno UI / kubectl get policyreport -A.
+# Switch individual policies to Enforce once your workloads comply.
+#
+# Excluded from all policies: kyverno, kube-system, kube-public, karpenter, tetragon
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+  annotations:
+    policies.kyverno.io/title: Require Resource Limits
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >
+      CPU and memory limits must be set on all containers to prevent resource starvation
+      and enable Karpenter consolidation decisions.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-resource-limits
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kyverno
+                - kube-system
+                - kube-public
+                - karpenter
+                - tetragon
+      validate:
+        message: "Resource limits (cpu and memory) must be set on all containers."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  limits:
+                    memory: "?*"
+                    cpu: "?*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-probes
+  annotations:
+    policies.kyverno.io/title: Require Liveness and Readiness Probes
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >
+      Liveness and readiness probes are required on all Deployments for proper
+      lifecycle management, rolling updates, and traffic routing.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-probes
+      match:
+        any:
+          - resources:
+              kinds: [Deployment]
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kyverno
+                - kube-system
+                - kube-public
+                - karpenter
+                - tetragon
+      validate:
+        message: "Liveness and readiness probes are required for Deployments."
+        pattern:
+          spec:
+            template:
+              spec:
+                containers:
+                  - livenessProbe:
+                      "?*": "?*"
+                    readinessProbe:
+                      "?*": "?*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  annotations:
+    policies.kyverno.io/title: Disallow Latest Tag
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >
+      The :latest tag is mutable and leads to non-reproducible deployments.
+      Enforced in production only; other namespaces generate an Audit finding.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-latest-tag
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [production]
+      validate:
+        message: "Using :latest image tag is not allowed in production. Specify an immutable tag."
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest"
+            initContainers:
+              - (image): "?*"
+                image: "!*:latest"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-owner-label
+  annotations:
+    policies.kyverno.io/title: Require Owner Label
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/description: >
+      An 'owner' label is required on all Deployments for cost attribution and
+      on-call routing. Example: owner: platform-team
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-owner-label
+      match:
+        any:
+          - resources:
+              kinds: [Deployment]
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kyverno
+                - kube-system
+                - kube-public
+                - karpenter
+                - tetragon
+                - argocd
+                - monitoring
+                - cert-manager
+                - external-secrets
+      validate:
+        message: "An 'owner' label is required on all Deployments. Example: owner: platform-team"
+        pattern:
+          metadata:
+            labels:
+              owner: "?*"

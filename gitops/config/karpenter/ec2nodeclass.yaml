@@ -1,0 +1,106 @@
+# EC2NodeClass – Bottlerocket arm64 node configuration
+#
+# Applies to all Karpenter-provisioned nodes (referenced by nodepool.yaml).
+#
+# OS: Bottlerocket ARM64
+#   - Immutable root filesystem (dm-verity), no SSH, SELinux enforcing
+#   - A/B atomic updates (safe rollback)
+#   - Minimal attack surface: no shell, no package manager at runtime
+#
+# Security:
+#   - IMDSv2 required (hopLimit=1 prevents container SSRF via metadata service)
+#   - gp3 data volume: encrypted at rest, deleted on termination
+#   - userData merged with Karpenter-injected bootstrap (do not touch /dev/xvda)
+#
+# To update node settings cluster-wide, edit the userData block below.
+# Changes trigger a rolling replacement of all Karpenter nodes on next sync.
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  # Bottlerocket ARM64 – matches the managed node group AMI type.
+  # @latest always selects the most recent Bottlerocket release for EKS 1.35.
+  amiFamily: Bottlerocket
+  amiSelectorTerms:
+    - alias: bottlerocket@latest
+
+  # Subnet and security group discovery via the cluster discovery tag.
+  # Tag "karpenter.sh/discovery: eks-platform" is applied in vpc.ts.
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: eks-platform
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: eks-platform
+
+  # IAM role for node bootstrap – must match the role created in node-iam.ts
+  role: eks-platform-node-role
+
+  # userData is merged with Karpenter's EKS bootstrap config at node launch time.
+  # Partition layout:
+  #   /dev/xvda – OS root (dm-verity protected; do NOT add a blockDeviceMapping for it)
+  #   /dev/xvdb – Data volume: container images, overlayfs layers, ephemeral storage
+  userData: |
+    # Bottlerocket settings – container and EKS runtime tuning
+    # Applied to all node groups (managed + Karpenter-provisioned).
+    # Merged with EKS/Karpenter-injected bootstrap config at node launch time.
+    #
+    # Reference: https://bottlerocket.dev/en/os/latest/api/settings/
+
+    [settings.kubernetes]
+    container-log-max-size = "10Mi"
+    container-log-max-files = 5
+    cpu-cfs-quota-enforced = true
+    shutdown-grace-period = "30s"
+    shutdown-grace-period-for-critical-pods = "10s"
+    seccomp-default = true
+
+    [settings.kubernetes.system-reserved]
+    cpu = "100m"
+    memory = "100Mi"
+    ephemeral-storage = "1Gi"
+
+    [settings.kubernetes.kube-reserved]
+    cpu = "100m"
+    memory = "200Mi"
+    ephemeral-storage = "1Gi"
+
+    [settings.kubernetes.eviction-soft]
+    "memory.available" = "200Mi"
+    "nodefs.available" = "15%"
+
+    [settings.kubernetes.eviction-soft-grace-period]
+    "memory.available" = "2m"
+    "nodefs.available" = "5m"
+
+    [settings.kubernetes.eviction-hard]
+    "memory.available" = "100Mi"
+    "nodefs.available" = "10%"
+    "nodefs.inodesFree" = "5%"
+
+    [settings.kernel.sysctl]
+    "net.core.somaxconn" = "65535"
+    "net.ipv4.tcp_max_syn_backlog" = "65535"
+    "net.ipv4.ip_local_port_range" = "1024 65535"
+    "vm.overcommit_memory" = "1"
+    "fs.inotify.max_user_watches" = "1048576"
+    "fs.inotify.max_user_instances" = "8192"
+    "fs.file-max" = "1048576"
+
+  blockDeviceMappings:
+    - deviceName: /dev/xvdb  # data volume only – never map /dev/xvda (dm-verity)
+      ebs:
+        volumeSize: 50Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+
+  metadataOptions:
+    httpTokens: required          # IMDSv2 mandatory – blocks SSRF via metadata service
+    httpPutResponseHopLimit: 1   # containers cannot reach IMDS (1 hop = host only)
+    httpEndpoint: enabled
+
+  tags:
+    ManagedBy: Karpenter
+    Cluster: eks-platform

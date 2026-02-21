@@ -1,0 +1,27 @@
+{
+  "name": "eks-platform",
+  "version": "1.0.0",
+  "description": "Production EKS platform with GitOps, security hardening, and SRE practices",
+  "main": "index.ts",
+  "scripts": {
+    "build": "tsc",
+    "preview": "pulumi preview",
+    "deploy": "pulumi up",
+    "destroy": "pulumi destroy"
+  },
+  "dependencies": {
+    "@pulumi/aws": "^7.20.0",
+    "@pulumi/awsx": "^3.2.0",
+    "@pulumi/eks": "^4.2.0",
+    "@pulumi/kubernetes": "^4.26.0",
+    "@pulumi/pulumi": "^3.223.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^25.3.0"
+  },
+  "overrides": {
+    "minimatch": "^10.2.1",
+    "glob": "^11.0.0"
+  }
+}

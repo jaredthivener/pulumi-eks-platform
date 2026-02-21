@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs for the same PR/branch so stale previews don't queue
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── 1. TypeScript type check ───────────────────────────────────────────────
+  typecheck:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  # ── 2. CrossGuard policy pack compile ─────────────────────────────────────
+  policy-pack:
+    name: Policy Pack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: policy-packs/aws-security/package-lock.json
+
+      - name: Install policy pack deps
+        run: npm ci
+        working-directory: policy-packs/aws-security
+
+      - name: Type-check policy pack
+        run: npx tsc --noEmit
+        working-directory: policy-packs/aws-security
+
+  # ── 3. Trivy misconfiguration scan ────────────────────────────────────────
+  trivy:
+    name: Trivy Config Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # upload SARIF to GitHub Security tab
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan gitops YAML files
+        uses: aquasecurity/trivy-action@0.34.1
+        with:
+          scan-type: config
+          scan-ref: gitops/
+          severity: MEDIUM,HIGH,CRITICAL
+          exit-code: "1"          # fail the job on any finding
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload results to GitHub Security
+        if: always()             # upload even if the scan found issues
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ── 4. Pulumi preview ─────────────────────────────────────────────────────
+  # Requires two repository secrets / variables:
+  #   PULUMI_ACCESS_TOKEN  – Pulumi Cloud token (secret)
+  #   AWS_ROLE_ARN         – IAM role to assume via OIDC (secret or var)
+  #
+  # The IAM role trust policy must allow:
+  #   Principal: { Federated: "arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com" }
+  #   Condition: StringEquals: "token.actions.githubusercontent.com:sub": "repo:<org>/<repo>:*"
+  pulumi-preview:
+    name: Pulumi Preview
+    runs-on: ubuntu-latest
+    needs: [typecheck, policy-pack]   # only run if both compile checks pass
+    permissions:
+      contents: read
+      id-token: write    # required for AWS OIDC
+      pull-requests: write  # allow pulumi/actions to post PR comment
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install policy pack deps
+        run: npm ci
+        working-directory: policy-packs/aws-security
+
+      # Use OIDC — no long-lived AWS keys in CI
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Pulumi preview
+        uses: pulumi/actions@v6
+        with:
+          command: preview
+          stack-name: dev
+          # Run CrossGuard policy pack so policy violations fail the preview
+          policyPacks: policy-packs/aws-security
+          # Post preview diff as a PR comment for easy review
+          comment-on-pr: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}

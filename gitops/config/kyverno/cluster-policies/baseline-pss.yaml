@@ -1,0 +1,112 @@
+# Baseline PSS ClusterPolicies
+#
+# Scope: argocd, monitoring, cert-manager, external-secrets
+# These namespaces run privileged/infrastructure workloads so they are excluded
+# from the "restricted" kyverno-policies chart. This file enforces the baseline
+# PSS requirements that are still appropriate for them.
+#
+# To exclude a specific workload: create a PolicyException resource in the
+# kyverno namespace. See https://kyverno.io/docs/writing-policies/exceptions/
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privilege-escalation-baseline
+  annotations:
+    policies.kyverno.io/title: Disallow Privilege Escalation
+    policies.kyverno.io/category: Pod Security Standards (Baseline)
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >
+      Privilege escalation allows a process to gain more privileges than its parent.
+      Disallowed in baseline namespaces (argocd, monitoring, cert-manager, external-secrets).
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-privilege-escalation
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - argocd
+                - monitoring
+                - cert-manager
+                - external-secrets
+      validate:
+        message: "Privilege escalation is disallowed. Set allowPrivilegeEscalation: false."
+        pattern:
+          spec:
+            containers:
+              - (name): "*"
+                securityContext:
+                  allowPrivilegeEscalation: false
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-root-baseline
+  annotations:
+    policies.kyverno.io/title: Disallow Root User
+    policies.kyverno.io/category: Pod Security Standards (Baseline)
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >
+      Containers must not run as root (UID 0) in baseline namespaces.
+      Audit mode: reports violations without blocking (some infra charts use root).
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: deny-root-user
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - argocd
+                - monitoring
+                - cert-manager
+                - external-secrets
+      validate:
+        message: "Running as root (UID 0) is not allowed. Set runAsNonRoot: true or runAsUser > 0."
+        anyPattern:
+          - spec:
+              securityContext:
+                runAsNonRoot: true
+          - spec:
+              securityContext:
+                runAsUser: ">0"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged-baseline
+  annotations:
+    policies.kyverno.io/title: Disallow Privileged Containers
+    policies.kyverno.io/category: Pod Security Standards (Baseline)
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >
+      Privileged containers have full access to the host kernel. Disallowed
+      in baseline namespaces (argocd, monitoring, cert-manager, external-secrets).
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: deny-privileged
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces:
+                - argocd
+                - monitoring
+                - cert-manager
+                - external-secrets
+      validate:
+        message: "Privileged containers are disallowed."
+        pattern:
+          spec:
+            containers:
+              - (name): "*"
+                =(securityContext):
+                  =(privileged): false

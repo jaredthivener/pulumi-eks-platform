@@ -1,0 +1,403 @@
+# ── opentelemetry-operator ───────────────────────────────────────────────────
+# Manages OpenTelemetry Collector deployments via the OpenTelemetryCollector CRD.
+# Admission webhooks are secured by cert-manager. Enables structured trace/metric
+# pipelines without hard-coding collector config into each application.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: opentelemetry-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+    chart: opentelemetry-operator
+    targetRevision: "0.105.1"
+    helm:
+      values: |
+        manager:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          serviceMonitor:
+            enabled: true
+        nodeSelector:
+          eks.amazonaws.com/nodegroup: system
+        admissionWebhooks:
+          certManager:
+            enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: opentelemetry-operator-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+# ── kube-prometheus-stack ────────────────────────────────────────────────────
+# Deploys the full kube-prometheus-stack: Prometheus (2 replicas, 15-day retention,
+# 50Gi PVC), Grafana (admin creds from AWS Secrets Manager via ESO), and
+# Alertmanager (2 replicas, PagerDuty/Slack credentials mounted as a Secret).
+# Grafana has a pre-configured Loki datasource for unified metrics + log exploration.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: "82.2.0"
+    helm:
+      values: |
+        grafana:
+          enabled: true
+          admin:
+            existingSecret: grafana-admin-credentials
+            userKey: admin-user
+            passwordKey: admin-password
+          additionalDataSources:
+            - name: Loki
+              type: loki
+              url: http://loki-gateway.loki.svc.cluster.local
+              access: proxy
+              isDefault: false
+            - name: Jaeger
+              type: jaeger
+              url: http://jaeger-query.tracing.svc.cluster.local:16686
+              access: proxy
+              isDefault: false
+              jsonData:
+                tracesToLogsV2:
+                  datasourceUid: loki
+                  spanStartTimeShift: "-1m"
+                  spanEndTimeShift: "1m"
+                  filterByTraceID: true
+                  filterBySpanID: false
+                  customQuery: false
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          nodeSelector:
+            eks.amazonaws.com/nodegroup: system
+        prometheus:
+          prometheusSpec:
+            replicas: 2
+            retention: 15d
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 50Gi
+            podDisruptionBudget:
+              enabled: true
+              minAvailable: 1
+            resources:
+              requests:
+                cpu: 500m
+                memory: 2Gi
+              limits:
+                memory: 4Gi
+            nodeSelector:
+              eks.amazonaws.com/nodegroup: system
+            # Accept OTLP metric pushes from the OTel Collector DaemonSet
+            enableRemoteWriteReceiver: true
+        alertmanager:
+          alertmanagerSpec:
+            replicas: 2
+            secrets:
+              - alertmanager-credentials
+            podDisruptionBudget:
+              enabled: true
+              minAvailable: 1
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                memory: 128Mi
+            nodeSelector:
+              eks.amazonaws.com/nodegroup: system
+        prometheusOperator:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          nodeSelector:
+            eks.amazonaws.com/nodegroup: system
+        kubeStateMetrics:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+        nodeExporter:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+# ── loki ─────────────────────────────────────────────────────────────────────
+# Grafana Loki in SimpleScalable mode: separate write, read, backend, and gateway
+# components (2 replicas each). Logs are stored in S3 (eks-platform-loki-chunks)
+# via an EKS Pod Identity IAM role — no static credentials. replication_factor=2
+# ensures writes survive a single replica failure. TSDB schema v13, 31-day retention.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: loki
+    targetRevision: "6.53.0"
+    helm:
+      values: |
+        deploymentMode: SimpleScalable
+        loki:
+          auth_enabled: false
+          commonConfig:
+            replication_factor: 2
+          storage:
+            type: s3
+            s3:
+              region: us-east-1
+              bucketNames:
+                chunks: eks-platform-loki-chunks
+                ruler: eks-platform-loki-chunks
+                admin: eks-platform-loki-chunks
+          schemaConfig:
+            configs:
+              - from: "2024-01-01"
+                store: tsdb
+                object_store: s3
+                schema: v13
+                index:
+                  prefix: loki_index_
+                  period: 24h
+          limits_config:
+            retention_period: 744h   # 31 days
+          compactor:
+            retention_enabled: true
+            compaction_interval: 10m
+        write:
+          replicas: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          nodeSelector:
+            eks.amazonaws.com/nodegroup: system
+        read:
+          replicas: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          nodeSelector:
+            eks.amazonaws.com/nodegroup: system
+        backend:
+          replicas: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          nodeSelector:
+            eks.amazonaws.com/nodegroup: system
+        gateway:
+          replicas: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          nodeSelector:
+            eks.amazonaws.com/nodegroup: system
+        serviceMonitor:
+          enabled: true
+        serviceAccount:
+          create: true
+          name: loki
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: loki
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+# ── slo-rules ────────────────────────────────────────────────────────────────
+# Applies PrometheusRule manifests from gitops/config/monitoring/ containing:
+#   - SLI recording rules (pre-aggregated rate/error/latency metrics)
+#   - SLO burn-rate alerts (fast-burn 1h/5h windows, slow-burn 6h/3d windows)
+#   - Alertmanager config for routing to PagerDuty and Slack
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: slo-rules
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://github.com/jaredthivener/eks-platform
+    path: gitops/config/monitoring
+    targetRevision: HEAD
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+# ── jaeger ─────────────────────────────────────────────────────────────────────────────
+# Jaeger v2 (OpenTelemetry-native): unified collector + query deployment per
+# the new architecture introduced in Jaeger 2.x. Receives OTLP spans from the
+# OTel Collector sidecar layer (see tracing-config app below). Stores traces
+# in memory (badger) by default; add an Elasticsearch/OpenSearch backend for
+# production retention beyond the single-replica lifecycle.
+# Query UI is accessible via `kubectl port-forward svc/jaeger-query 16686` or
+# through Grafana’s Jaeger datasource (pre-configured above).
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jaeger
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://jaegertracing.github.io/helm-charts
+    chart: jaeger
+    targetRevision: "4.5.0"
+    helm:
+      values: |
+        collector:
+          replicaCount: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          nodeSelector:
+            eks.amazonaws.com/nodegroup: system
+          serviceMonitor:
+            enabled: true
+        query:
+          replicaCount: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          nodeSelector:
+            eks.amazonaws.com/nodegroup: system
+          serviceMonitor:
+            enabled: true
+        storage:
+          type: memory
+          # TODO: switch to elasticsearch for persistent traces in production
+          # type: elasticsearch
+          # elasticsearch:
+          #   host: <your-es-host>
+          #   port: 9200
+        podDisruptionBudget:
+          enabled: true
+          minAvailable: 1
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tracing
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+# ── tracing-config ──────────────────────────────────────────────────────────────────
+# Deploys the OpenTelemetryCollector CR. The OTel Operator (already installed)
+# picks this up and creates a Deployment that:
+#  1. Receives OTLP spans from production/staging apps (gRPC 4317, HTTP 4318)
+#  2. Applies tail sampling (keep 100% of error traces, 10% of success traces)
+#  3. Exports to Jaeger’s OTLP collector endpoint
+#  4. Exports Prometheus metrics for Prometheus to scrape
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tracing-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: eks-platform
+  source:
+    repoURL: https://github.com/jaredthivener/eks-platform
+    path: gitops/config/tracing
+    targetRevision: HEAD
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tracing
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

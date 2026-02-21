@@ -1,0 +1,70 @@
+# Image signature verification – Cosign keyless (Sigstore / OIDC)
+#
+# Requires all container images in production and staging to carry a valid Cosign
+# signature recorded in Rekor (the public Sigstore transparency log).
+#
+# Verification is keyless: identity is bound to the GitHub Actions OIDC token that
+# built and pushed the image. No long-lived signing key to rotate or protect.
+#
+# Configuration:
+#   cosignSubject – GitHub Actions workflow glob for your org.
+#                   Update to match your GitHub org slug.
+#   cosignIssuer  – OIDC provider. Change if not using GitHub Actions.
+#
+# Rollout steps:
+#   1. Leave validationFailureAction: Audit and monitor PolicyReports
+#   2. Sign all app images in CI: cosign sign --yes <ECR_IMAGE_URI>
+#   3. Switch to Enforce once all production/staging images are signed
+#
+# mutateDigest: true replaces the image tag with its sha256 digest after
+# verification – prevents tag mutation attacks post-verification.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify Image Signatures
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >
+      Requires all container images in production and staging to be signed via
+      Cosign keyless (Sigstore OIDC). Images without a valid signature in Rekor
+      are rejected. Public registry images (platform components) are excluded.
+spec:
+  # Switch to Enforce once all production/staging images are signed by CI.
+  validationFailureAction: Audit
+  background: false   # image verification only applies at admission time
+  rules:
+    - name: verify-ecr-signature
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              # Enforce only in application namespaces.
+              # Platform namespaces (argocd, monitoring, etc.) use upstream images
+              # we cannot control signing for.
+              namespaces:
+                - production
+                - staging
+      verifyImages:
+        - # Match only images from your ECR registry.
+          # Public registries (public.ecr.aws, registry.k8s.io, docker.io) are
+          # not matched and are not required to be signed.
+          imageReferences:
+            - "*.dkr.ecr.*.amazonaws.com/*"
+
+          # Replace the image tag with its immutable sha256 digest after verification.
+          # Prevents tag mutation attacks (the signed image is exactly what runs).
+          mutateDigest: true
+          verifyDigest: false
+
+          attestors:
+            - count: 1   # at least one valid attestor must match
+              entries:
+                - keyless:
+                    # IMPORTANT: update subject to your GitHub org slug
+                    subject: "https://github.com/your-org/*"
+                    # Change if not using GitHub Actions OIDC
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: "https://rekor.sigstore.dev"
