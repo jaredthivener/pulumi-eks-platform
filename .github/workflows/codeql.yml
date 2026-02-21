@@ -38,6 +38,10 @@ jobs:
           # Use the security-extended query suite for broader coverage
           queries: security-extended
 
+      # Install deps so tsc is available when autobuild runs npm run build
+      - name: Install dependencies
+        run: npm ci
+
       # Autobuild compiles the code — for TypeScript this runs tsc
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4
