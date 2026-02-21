@@ -78,17 +78,18 @@ jobs:
           sarif_file: trivy-results.sarif
 
   # ── 4. Pulumi preview ─────────────────────────────────────────────────────
-  # Requires two repository secrets / variables:
-  #   PULUMI_ACCESS_TOKEN  – Pulumi Cloud token (secret)
-  #   AWS_ROLE_ARN         – IAM role to assume via OIDC (secret or var)
-  #
-  # The IAM role trust policy must allow:
-  #   Principal: { Federated: "arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com" }
-  #   Condition: StringEquals: "token.actions.githubusercontent.com:sub": "repo:<org>/<repo>:*"
+  # Requires:
+  #   PULUMI_ACCESS_TOKEN  – repository *secret*  (Settings → Secrets)
+  #   AWS_ROLE_ARN         – repository *variable* (Settings → Variables)
+  #                          (variables are available in job-level if:; secrets are not)
   pulumi-preview:
     name: Pulumi Preview
     runs-on: ubuntu-latest
     needs: [typecheck, policy-pack]   # only run if both compile checks pass
+    # Skip gracefully when AWS/Pulumi aren't configured yet.
+    # AWS_ROLE_ARN must be a repository *variable* (Settings → Variables),
+    # not a secret — secrets context is not available in job-level if expressions.
+    if: vars.AWS_ROLE_ARN != ''
     permissions:
       contents: read
       id-token: write    # required for AWS OIDC
@@ -111,7 +112,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: us-east-1
 
       - name: Pulumi preview
