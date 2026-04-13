@@ -10,11 +10,11 @@
     "destroy": "pulumi destroy"
   },
   "dependencies": {
-    "@pulumi/aws": "^7.23.0",
-    "@pulumi/awsx": "^3.3.1",
+    "@pulumi/aws": "^7.25.0",
+    "@pulumi/awsx": "^3.4.0",
     "@pulumi/eks": "^4.2.0",
     "@pulumi/kubernetes": "^4.28.0",
-    "@pulumi/pulumi": "^3.228.0"
+    "@pulumi/pulumi": "^3.230.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
