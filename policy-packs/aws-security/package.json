@@ -2,9 +2,9 @@
     "name": "aws-typescript",
     "version": "0.0.1",
     "dependencies": {
-        "@pulumi/aws": "^7.23.0",
-        "@pulumi/pulumi": "^3.226.0",
-        "@pulumi/policy": "^1.20.0"
+        "@pulumi/aws": "^7.30.0",
+        "@pulumi/pulumi": "^3.243.0",
+        "@pulumi/policy": "^1.21.0"
     },
     "devDependencies": {
         "typescript": "^5.9.3",
